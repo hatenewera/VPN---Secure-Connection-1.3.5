@@ -1,0 +1,10 @@
+[package]
+name = "ega-vpn-helper"
+version = "1.0.0"
+edition = "2021"
+description = "Privileged helper for EGA VPN"
+authors = ["EGA VPN"]
+
+[[bin]]
+name = "ega-vpn-helper"
+path = "src/main.rs"
