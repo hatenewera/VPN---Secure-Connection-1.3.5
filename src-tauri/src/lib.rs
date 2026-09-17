@@ -38,6 +38,8 @@ fn xray_start(app:tauri::AppHandle, config:String, state:tauri::State<State>)->R
     let out=Command::new("powershell").args(["-NoProfile","-NonInteractive","-Command",&ps]).output().map_err(|e|format!("Cannot elevate VPN helper: {e}"))?;
     if !out.status.success(){return Err("Windows elevation was cancelled or failed".into())}
     let result=dir.join("helper-result.txt");
+    let _=fs::remove_file(&result);
+    let _=fs::remove_file(dir.join("xray.log"));
     let mut text=String::new();
     for _ in 0..30 {
         if let Ok(t)=fs::read_to_string(&result) {
@@ -48,8 +50,8 @@ fn xray_start(app:tauri::AppHandle, config:String, state:tauri::State<State>)->R
     if !text.starts_with("OK") {
         let detail=trimmed_or_default(&text);
         let xlog=fs::read_to_string(dir.join("xray.log")).unwrap_or_default();
-        let tail=xlog.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
-        return Err(if tail.is_empty(){detail}else{format!("{} | Xray: {}",detail,tail)});
+        let tail=xlog.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        return Err(if tail.is_empty(){detail}else{format!("{}\n\nXray log:\n{}",detail,tail)});
     }
     *guard=true;
     Ok(())
@@ -99,7 +101,7 @@ fn xray_stats()->Result<Stats,String>{
  let s=String::from_utf8_lossy(&o.stdout).trim().to_string(); let p:Vec<_>=s.split('|').collect();if p.len()!=2{return Ok(Stats{received:0,sent:0})}Ok(Stats{received:p[0].trim().parse().unwrap_or(0),sent:p[1].trim().parse().unwrap_or(0)})
 }
 
-fn trimmed_or_default(text:&str)->String{ let v=text.lines().skip(1).collect::<Vec<_>>().join(" ").trim().to_string(); if v.is_empty(){"VPN helper failed".into()}else{v} }
+fn trimmed_or_default(text:&str)->String{ let v=text.lines().skip(1).collect::<Vec<_>>().join("\n").trim().to_string(); if v.is_empty(){"VPN helper failed: helper-result.txt contained no diagnostic details".into()}else{v} }
 
 pub fn run(){
     tauri::Builder::default()
