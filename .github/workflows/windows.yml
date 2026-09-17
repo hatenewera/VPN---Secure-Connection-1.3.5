@@ -1,0 +1,105 @@
+name: Build EGA VPN 1.2.6 for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ega-vpn-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Show tool versions
+        shell: powershell
+        run: |
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create application icon
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install pillow
+          New-Item -ItemType Directory -Force src-tauri/icons | Out-Null
+          python -c "from PIL import Image,ImageDraw,ImageFont; im=Image.new('RGBA',(256,256),(16,18,23,255)); d=ImageDraw.Draw(im); d.rounded_rectangle((12,12,244,244),radius=54,outline=(255,255,255,235),width=5); d.ellipse((78,78,178,178),outline=(255,255,255,220),width=4); d.text((112,88),'E',fill=(255,255,255,255)); im.save('src-tauri/icons/icon.ico',format='ICO',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Download official Xray Windows x64 package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force src-tauri/resources | Out-Null
+          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/XTLS/Xray-core/releases/latest' -Headers @{ 'User-Agent'='EGA-VPN-Build' }
+          $asset = $release.assets | Where-Object { $_.name -match 'windows-64\.zip$' } | Select-Object -First 1
+          if (-not $asset) { Write-Error 'Official Xray Windows x64 asset was not found'; exit 1 }
+          Write-Host "Using Xray $($release.tag_name): $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile xray.zip
+          Expand-Archive xray.zip xray-extracted -Force
+          $x = Get-ChildItem xray-extracted -Filter xray.exe -Recurse | Select-Object -First 1
+          $w = Get-ChildItem xray-extracted -Filter wintun.dll -Recurse | Select-Object -First 1
+          if (-not $x) { Write-Error 'xray.exe missing'; exit 1 }
+          if (-not $w) { Write-Error 'wintun.dll missing'; exit 1 }
+          Copy-Item $x.FullName src-tauri/resources/xray.exe -Force
+          Copy-Item $w.FullName src-tauri/resources/wintun.dll -Force
+          Get-ChildItem src-tauri/resources | Format-Table Name,Length
+
+      - name: Build privileged VPN helper
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release --manifest-path ega-vpn-helper/Cargo.toml
+          $helper = Join-Path $PWD 'ega-vpn-helper\target\release\ega-vpn-helper.exe'
+          if (-not (Test-Path $helper)) { Write-Error "Helper executable not found: $helper"; exit 1 }
+          New-Item -ItemType Directory -Force src-tauri/resources | Out-Null
+          Copy-Item $helper src-tauri/resources/ega-vpn-helper.exe -Force
+          Write-Host "Helper copied: $helper"
+          Get-Item src-tauri/resources/ega-vpn-helper.exe | Format-List FullName,Length
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Validate main Tauri project
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path dist)) { Write-Error 'Frontend dist folder was not created'; exit 1 }
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Windows installer
+        run: npm run tauri build
+
+      - name: Verify installer
+        shell: powershell
+        run: |
+          $files = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue
+          if (-not $files) { Write-Error 'NSIS installer was not produced'; exit 1 }
+          $files | Format-Table FullName,Length
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: EGA-VPN-1.2.6-Windows-Installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
